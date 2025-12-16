@@ -10,6 +10,10 @@ Maintainer: aps-prebid@amazon.com
 
 Connects to Amazon Publisher Services (APS) for bids.
 
+## Test Bids
+
+Please contact your APS Account Manager to learn more about our testing policies.
+
 # Usage
 
 ## Prerequisites
@@ -26,7 +30,7 @@ pbjs.setBidderConfig(
       }
     },
   },
-  mergeConfig // mergeConfig toggle
+  true // mergeConfig toggle
 );
 ```
 

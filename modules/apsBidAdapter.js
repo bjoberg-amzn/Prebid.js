@@ -2,6 +2,7 @@ import { isStr, isNumber, logWarn, logError } from '../src/utils.js';
 import { registerBidder } from '../src/adapters/bidderFactory.js';
 import { config } from '../src/config.js';
 import { BANNER, VIDEO } from '../src/mediaTypes.js';
+import { hasPurpose1Consent } from '../src/utils/gdpr.js';
 import { ortbConverter } from '../libraries/ortbConverter/converter.js';
 
 /**
@@ -12,7 +13,7 @@ import { ortbConverter } from '../libraries/ortbConverter/converter.js';
  */
 
 const GVLID = 793;
-const ADAPTER_VERSION = '2.0.0';
+export const ADAPTER_VERSION = '2.0.0';
 const BIDDER_CODE = 'aps';
 const AAX_ENDPOINT = 'https://web.ads.aps.amazon-adsystem.com/e/pb/bid';
 const DEFAULT_PREBID_CREATIVE_JS_URL =
@@ -74,6 +75,18 @@ function record(eventName, data) {
 }
 
 /**
+ * Record and log a new error.
+ *
+ * @param {string} eventName - The name of the event to record
+ * @param {Error} err - Error object
+ * @param {any} data - Event data object
+ */
+function recordAndLogError(eventName, err, data) {
+  record(eventName, { ...data, error: err });
+  logError(err.message);
+}
+
+/**
  * Validates whether a given account ID is valid.
  *
  * @param {string|number} accountID - The account ID to validate
@@ -127,36 +140,41 @@ export const converter = ortbConverter({
 
     request.ext = request.ext ?? {};
     request.ext.account = config.readConfig('aps.accountID');
+    request.ext.sdk = {
+      version: ADAPTER_VERSION,
+      source: 'prebid',
+    };
     request.cur = request.cur ?? ['USD'];
 
-    // Validate and process impressions - fail fast on structural issues
     if (!request.imp || !Array.isArray(request.imp)) {
-      throw new Error('Request must contain a valid impressions array');
+      return request;
     }
 
     request.imp.forEach((imp, index) => {
       if (!imp) {
-        throw new Error(`Impression at index ${index} is null or undefined`);
+        return; // continue to next iteration
       }
 
       if (!imp.banner) {
-        return;
+        return; // continue to next iteration
       }
 
       const doesHWExist = imp.banner.w >= 0 && imp.banner.h >= 0;
       const doesFormatExist =
         Array.isArray(imp.banner.format) && imp.banner.format.length > 0;
 
-      if (!doesHWExist && doesFormatExist) {
-        const { w, h } = imp.banner.format[0];
-        if (typeof w !== 'number' || typeof h !== 'number') {
-          throw new Error(
-            `Invalid banner format dimensions at impression ${index}: w=${w}, h=${h}`
-          );
-        }
-        imp.banner.w = w;
-        imp.banner.h = h;
+      if (doesHWExist || !doesFormatExist) {
+        return; // continue to next iteration
       }
+
+      const { w, h } = imp.banner.format[0];
+
+      if (typeof w !== 'number' || typeof h !== 'number') {
+        return; // continue to next iteration
+      }
+
+      imp.banner.w = w;
+      imp.banner.h = h;
     });
 
     return request;
@@ -201,8 +219,8 @@ export const spec = {
       }
       return true;
     } catch (err) {
-      record('isBidRequestValid/didError', { error: err });
-      logError('Error while validating bid request', err);
+      err.message = `Error while validating bid request: ${err?.message}`;
+      recordAndLogError('isBidRequestValid/didError', err);
     }
   },
 
@@ -230,13 +248,10 @@ export const spec = {
         method: 'POST',
         url: endpoint,
         data: converter.toORTB({ bidRequests, bidderRequest }),
-        options: {
-          contentType: 'application/json',
-        },
       };
     } catch (err) {
-      record('buildRequests/didError', { error: err });
-      logError('Error while building bid request', err);
+      err.message = `Error while building bid request: ${err?.message}`;
+      recordAndLogError('buildRequests/didError', err);
     }
   },
 
@@ -283,8 +298,8 @@ export const spec = {
 
       return interpretedResponse.bids;
     } catch (err) {
-      record('interpretResponse/didError', { error: err });
-      logError('Error while interpreting bid response', err);
+      err.message = `Error while interpreting bid response: ${err?.message}`;
+      recordAndLogError('interpretResponse/didError', err);
     }
   },
 
@@ -305,17 +320,18 @@ export const spec = {
   ) {
     record('getUserSyncs');
     try {
-      const userSyncs = serverResponses.flatMap(
-        (res) => res?.body?.ext?.userSyncs ?? []
-      );
-      return userSyncs.filter(
-        (s) =>
-          (s.type === 'iframe' && syncOptions.iframeEnabled) ||
-          (s.type === 'image' && syncOptions.pixelEnabled)
-      );
+      if (hasPurpose1Consent(gdprConsent)) {
+        return serverResponses
+          .flatMap((res) => res?.body?.ext?.userSyncs ?? [])
+          .filter(
+            (s) =>
+              (s.type === 'iframe' && syncOptions.iframeEnabled) ||
+              (s.type === 'image' && syncOptions.pixelEnabled)
+          );
+      }
     } catch (err) {
-      record('getUserSyncs/didError', { error: err });
-      logError('Error while getting user syncs', err);
+      err.message = `Error while getting user syncs: ${err?.message}`;
+      recordAndLogError('getUserSyncs/didError', err);
     }
   },
 

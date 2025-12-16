@@ -1,8 +1,7 @@
 import sinon from 'sinon';
 import { expect } from 'chai';
-import { spec } from 'modules/apsBidAdapter';
+import { spec, ADAPTER_VERSION } from 'modules/apsBidAdapter';
 import { config } from 'src/config.js';
-import * as utils from 'src/utils.js';
 
 /**
  * Update config without rewriting the entire aps scope.
@@ -23,17 +22,14 @@ const updateAPSConfig = (data) => {
 
 describe('apsBidAdapter', () => {
   const accountID = 'test-account';
-  let logErrorSpy;
 
   beforeEach(() => {
-    logErrorSpy = sinon.spy(utils, 'logError');
     updateAPSConfig({ accountID });
   });
 
   afterEach(() => {
     config.resetConfig();
     delete window._aps;
-    logErrorSpy.restore();
   });
 
   describe('isBidRequestValid', () => {
@@ -97,8 +93,24 @@ describe('apsBidAdapter', () => {
         {
           bidId: 'bid1',
           adUnitCode: 'adunit1',
-          sizes: [[300, 250]],
+          mediaTypes: { banner: { sizes: [[300, 250]] } },
           params: {},
+        },
+        {
+          bidId: 'bid2',
+          code: 'video_div',
+          mediaTypes: {
+            video: {
+              playerSize: [400, 225],
+              context: 'outstream',
+              mimes: ['video/mp4'],
+              protocols: [1, 2, 3, 4, 5, 6, 7, 8],
+              minduration: 5,
+              maxduration: 30,
+              placement: 3,
+            },
+          },
+          bids: [{ bidder: 'aps' }],
         },
       ];
       bidderRequest = {
@@ -139,8 +151,31 @@ describe('apsBidAdapter', () => {
       expect(result.url).to.equal(
         'https://web.ads.aps.amazon-adsystem.com/e/pb/bid'
       );
-      expect(result.options.contentType).to.equal('application/json');
       expect(result.data).to.exist;
+    });
+
+    it('should return server request with properly formatted impressions', () => {
+      const result = spec.buildRequests(bidRequests, bidderRequest);
+
+      expect(result.data.imp.length).to.equal(2);
+      expect(result.data.imp[0]).to.deep.equal({
+        banner: { format: [{ h: 250, w: 300 }], h: 250, topframe: 0, w: 300 },
+        id: 'bid1',
+        secure: 1,
+      });
+      expect(result.data.imp[1]).to.deep.equal({
+        id: 'bid2',
+        secure: 1,
+        video: {
+          h: 225,
+          maxduration: 30,
+          mimes: ['video/mp4'],
+          minduration: 5,
+          placement: 3,
+          protocols: [1, 2, 3, 4, 5, 6, 7, 8],
+          w: 400,
+        },
+      });
     });
 
     it('when debugURL is provided, should use custom debugURL', () => {
@@ -157,6 +192,13 @@ describe('apsBidAdapter', () => {
       expect(result.data).to.be.an('object');
       expect(result.data.ext).to.exist;
       expect(result.data.ext.account).to.equal(accountID);
+    });
+
+    it('should include ADAPTER_VERSION in request data', () => {
+      const result = spec.buildRequests(bidRequests, bidderRequest);
+
+      expect(result.data.ext.sdk.version).to.equal(ADAPTER_VERSION);
+      expect(result.data.ext.sdk.source).to.equal('prebid');
     });
 
     it('when accountID is not provided, should convert bid requests to ORTB format with no account', () => {
@@ -227,32 +269,14 @@ describe('apsBidAdapter', () => {
       { imp: true },
       { imp: false },
     ].forEach((scenario) => {
-      it(`when imp is ${JSON.stringify(scenario.imp)}, should log error`, () => {
+      it(`when imp is ${JSON.stringify(scenario.imp)}, should send data`, () => {
         bidderRequest.ortb2 = {
           imp: scenario.imp,
         };
 
-        spec.buildRequests(bidRequests, bidderRequest);
+        const result = spec.buildRequests(bidRequests, bidderRequest);
 
-        expect(logErrorSpy.callCount).to.equal(2);
-        expect(logErrorSpy.firstCall.args[0]).to.equal(
-          'Error while converting to ORTB request'
-        );
-        expect(logErrorSpy.secondCall.args[0]).to.equal(
-          'Error while building bid request'
-        );
-        expect(logErrorSpy.secondCall.args[1].message).to.equal(
-          `Request must contain a valid impressions array`
-        );
-
-        const accountQueue = window._aps.get(accountID).queue;
-        expect(accountQueue).to.have.length(2);
-        expect(accountQueue[1].type).to.equal(
-          'prebidAdapter/buildRequests/didError'
-        );
-        expect(accountQueue[1].detail.error.message).to.equal(
-          'Request must contain a valid impressions array'
-        );
+        expect(result.data.imp).to.equal(scenario.imp);
       });
     });
 
@@ -264,70 +288,48 @@ describe('apsBidAdapter', () => {
       { imp: [undefined, {}] },
       { imp: [{}, undefined] },
     ].forEach((scenario, scenarioIndex) => {
-      it(`when imp array contains null/undefined at index, should log error - scenario ${scenarioIndex}`, () => {
+      it(`when imp array contains null/undefined at index, should send data - scenario ${scenarioIndex}`, () => {
         bidRequests = [];
         bidderRequest.ortb2 = { imp: scenario.imp };
-        const expectedIndex = scenario.imp.findIndex((imp) => !imp);
 
-        spec.buildRequests(bidRequests, bidderRequest);
+        const result = spec.buildRequests(bidRequests, bidderRequest);
 
-        expect(logErrorSpy.callCount).to.equal(2);
-        expect(logErrorSpy.firstCall.args[0]).to.equal(
-          'Error while converting to ORTB request'
-        );
-        expect(logErrorSpy.secondCall.args[0]).to.equal(
-          'Error while building bid request'
-        );
-        expect(logErrorSpy.secondCall.args[1].message).to.equal(
-          `Impression at index ${expectedIndex} is null or undefined`
-        );
-
-        const accountQueue = window._aps.get(accountID).queue;
-        expect(accountQueue).to.have.length(2);
-        expect(accountQueue[1].type).to.equal(
-          'prebidAdapter/buildRequests/didError'
-        );
-        expect(accountQueue[1].detail.error.message).to.equal(
-          `Impression at index ${expectedIndex} is null or undefined`
-        );
+        expect(result.data.imp).to.deep.equal(scenario.imp);
       });
     });
 
     [
-      { imp: [{ banner: { format: [{ w: 'invalid', h: 250 }] } }] },
-      { imp: [{ banner: { format: [{ w: 300, h: 'invalid' }] } }] },
-      { imp: [{ banner: { format: [{ w: null, h: 250 }] } }] },
-      { imp: [{ banner: { format: [{ w: 300, h: undefined }] } }] },
-      { imp: [{ banner: { format: [{ w: true, h: 250 }] } }] },
-      { imp: [{ banner: { format: [{ w: 300, h: false }] } }] },
-      { imp: [{ banner: { format: [{ w: {}, h: 250 }] } }] },
-      { imp: [{ banner: { format: [{ w: 300, h: [] }] } }] },
-    ].forEach((scenario, scenarioIndex) => {
-      it(`when banner format has invalid dimensions, should log error - scenario ${scenarioIndex}`, () => {
+      { w: 'invalid', h: 250 },
+      { w: 300, h: 'invalid' },
+      { w: null, h: 250 },
+      { w: 300, h: undefined },
+      { w: true, h: 250 },
+      { w: 300, h: false },
+      { w: {}, h: 250 },
+      { w: 300, h: [] },
+    ].forEach((scenario) => {
+      it(`when imp array contains banner object with invalid format (h: "${scenario.h}", w: "${scenario.w}"), should send data`, () => {
+        const { w, h } = scenario;
+        const invalidBannerObj = {
+          banner: {
+            format: [
+              { w, h },
+              { w: 300, h: 250 },
+            ],
+          },
+        };
+        const imp = [
+          { banner: { format: [{ w: 300, h: 250 }] } },
+          { video: { w: 300, h: undefined } },
+          invalidBannerObj,
+          { video: { w: undefined, h: 300 } },
+        ];
         bidRequests = [];
-        bidderRequest.ortb2 = scenario;
+        bidderRequest.ortb2 = { imp };
 
-        const { w, h } = scenario.imp[0].banner.format[0];
-        spec.buildRequests(bidRequests, bidderRequest);
-        expect(logErrorSpy.callCount).to.equal(2);
-        expect(logErrorSpy.firstCall.args[0]).to.equal(
-          'Error while converting to ORTB request'
-        );
-        expect(logErrorSpy.secondCall.args[0]).to.equal(
-          'Error while building bid request'
-        );
-        expect(logErrorSpy.secondCall.args[1].message).to.equal(
-          `Invalid banner format dimensions at impression 0: w=${w}, h=${h}`
-        );
+        const result = spec.buildRequests(bidRequests, bidderRequest);
 
-        const accountQueue = window._aps.get(accountID).queue;
-        expect(accountQueue).to.have.length(2);
-        expect(accountQueue[1].type).to.equal(
-          'prebidAdapter/buildRequests/didError'
-        );
-        expect(accountQueue[1].detail.error.message).to.equal(
-          `Invalid banner format dimensions at impression 0: w=${w}, h=${h}`
-        );
+        expect(result.data.imp).to.deep.equal(imp);
       });
     });
 
@@ -797,6 +799,55 @@ describe('apsBidAdapter', () => {
         );
 
         expect(result).deep.equal([]);
+      });
+    });
+
+    describe('GDPR consent', () => {
+      beforeEach(() => {
+        syncOptions = { iframeEnabled: true, pixelEnabled: true };
+        serverResponses = [
+          {
+            body: {
+              ext: {
+                userSyncs: [
+                  { type: 'iframe', url: 'https://example.com/iframe1' },
+                ],
+              },
+            },
+          },
+        ];
+      });
+
+      it('when GDPR applies and purpose 1 consent is not given, should return undefined', () => {
+        gdprConsent = {
+          gdprApplies: true,
+          vendorData: { purpose: { consents: { 1: false } } },
+        };
+        const result = spec.getUserSyncs(
+          syncOptions,
+          serverResponses,
+          gdprConsent,
+          uspConsent
+        );
+
+        expect(result).to.be.undefined;
+      });
+
+      it('when GDPR applies and purpose 1 consent is given, should return user syncs', () => {
+        gdprConsent = {
+          gdprApplies: true,
+          vendorData: { purpose: { consents: { 1: true } } },
+        };
+        const result = spec.getUserSyncs(
+          syncOptions,
+          serverResponses,
+          gdprConsent,
+          uspConsent
+        );
+
+        expect(result).deep.equal([
+          { type: 'iframe', url: 'https://example.com/iframe1' },
+        ]);
       });
     });
   });
